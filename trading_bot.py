@@ -57,10 +57,9 @@ class SimpleMovingAverageBot:
     def get_market_data(self):
         """Fetch recent market data for analysis"""
         try:
-            # First try to get minute data for recent days (free accounts have limited access)
             end = datetime.now()
             
-            # Try minute data for last 5 days first (free accounts may have access to this)
+            # First try to get minute data for recent days (free accounts have limited access)
             start = end - timedelta(days=5)
             
             try:
@@ -79,24 +78,58 @@ class SimpleMovingAverageBot:
                     logger.warning("Insufficient minute data, trying daily data...")
                     
             except Exception as minute_error:
-                logger.warning(f"Minute data unavailable ({minute_error}), falling back to daily data")
+                # Check if this is a subscription error
+                if "subscription" in str(minute_error).lower() or "sip" in str(minute_error).lower():
+                    logger.warning(f"Minute data unavailable (subscription does not permit querying recent SIP data), falling back to daily data")
+                else:
+                    logger.warning(f"Minute data unavailable ({minute_error}), falling back to daily data")
             
-            # Fallback to daily data for longer period
-            start = end - timedelta(days=60)  # Get more days for daily data
+            # Try recent daily data first
+            start = end - timedelta(days=60)
+            
+            try:
+                bars = self.api.get_bars(
+                    self.symbol,
+                    TimeFrame.Day,
+                    start=start.strftime('%Y-%m-%d'),
+                    end=end.strftime('%Y-%m-%d'),
+                    limit=100
+                ).df
+                
+                if not bars.empty and len(bars) >= self.long_window:
+                    logger.info(f"Retrieved {len(bars)} daily bars for {self.symbol}")
+                    return bars
+                else:
+                    logger.warning("Insufficient recent daily data, trying older historical data...")
+                    
+            except Exception as daily_error:
+                # Check if this is also a subscription error
+                if "subscription" in str(daily_error).lower() or "sip" in str(daily_error).lower():
+                    logger.warning(f"Recent daily data unavailable (subscription does not permit querying recent SIP data), falling back to older historical data")
+                else:
+                    logger.warning(f"Recent daily data unavailable ({daily_error}), falling back to older historical data")
+            
+            # Fallback to older historical data (typically available for free accounts)
+            # Use data from 3-6 months ago which should be available without premium subscription
+            end_historical = end - timedelta(days=90)  # 3 months ago
+            start_historical = end_historical - timedelta(days=60)  # Additional 60 days back
+            
+            logger.info(f"Attempting to fetch historical data from {start_historical.strftime('%Y-%m-%d')} to {end_historical.strftime('%Y-%m-%d')}")
             
             bars = self.api.get_bars(
                 self.symbol,
-                TimeFrame.Day,  # Daily bars as fallback
-                start=start.strftime('%Y-%m-%d'),
-                end=end.strftime('%Y-%m-%d'),
+                TimeFrame.Day,
+                start=start_historical.strftime('%Y-%m-%d'),
+                end=end_historical.strftime('%Y-%m-%d'),
                 limit=100
             ).df
             
             if bars.empty:
-                logger.warning("No market data received")
+                logger.error("No historical market data received - unable to proceed")
                 return None
                 
-            logger.info(f"Retrieved {len(bars)} daily bars for {self.symbol}")
+            logger.info(f"Retrieved {len(bars)} historical daily bars for {self.symbol}")
+            logger.info("Note: Using historical data due to subscription limitations with recent SIP data")
             return bars
             
         except Exception as e:
@@ -109,14 +142,21 @@ class SimpleMovingAverageBot:
             logger.warning("Insufficient data for signal calculation")
             return None, None, None
         
+        # Check if we're using historical data (more than 30 days old)
+        latest_date = pd.to_datetime(data.index[-1])
+        days_old = (datetime.now() - latest_date).days
+        if days_old > 30:
+            logger.info(f"Using historical data from {latest_date.strftime('%Y-%m-%d')} ({days_old} days old)")
+            logger.info("Note: Signals are based on historical data due to subscription limitations")
+        
         # Calculate moving averages
         data['short_ma'] = data['close'].rolling(window=self.short_window).mean()
         data['long_ma'] = data['close'].rolling(window=self.long_window).mean()
         
         # Calculate signal (1 = buy, -1 = sell, 0 = hold)
         data['signal'] = 0
-        data['signal'][self.short_window:] = np.where(
-            data['short_ma'][self.short_window:] > data['long_ma'][self.short_window:], 1, -1
+        data.iloc[self.short_window:, data.columns.get_loc('signal')] = np.where(
+            data['short_ma'].iloc[self.short_window:] > data['long_ma'].iloc[self.short_window:], 1, -1
         )
         
         # Detect crossover points
@@ -126,7 +166,8 @@ class SimpleMovingAverageBot:
         current_position = data['position'].iloc[-1]
         current_price = data['close'].iloc[-1]
         
-        logger.info(f"Current price: ${current_price:.2f}")
+        logger.info(f"Data date: {latest_date.strftime('%Y-%m-%d')}")
+        logger.info(f"Historical price: ${current_price:.2f}")
         logger.info(f"Short MA: ${data['short_ma'].iloc[-1]:.2f}")
         logger.info(f"Long MA: ${data['long_ma'].iloc[-1]:.2f}")
         logger.info(f"Signal: {current_signal}, Position change: {current_position}")
@@ -191,31 +232,40 @@ class SimpleMovingAverageBot:
         if signal is None:
             return
         
+        # Check if we're using historical data (more than 30 days old)
+        latest_date = pd.to_datetime(data.index[-1])
+        days_old = (datetime.now() - latest_date).days
+        
         # Get current position
         current_qty = self.get_current_position()
         logger.info(f"Current position: {current_qty} shares")
         
-        # Execute trades based on signals
-        if position_change == 2:  # Signal changed from -1 to 1 (buy signal)
-            if current_qty <= 0:  # Not already long
-                # Close any short position first
-                if current_qty < 0:
-                    self.place_order('buy', abs(current_qty))
-                # Open long position
-                self.place_order('buy', self.position_size)
-                logger.info("BUY signal executed")
-                
-        elif position_change == -2:  # Signal changed from 1 to -1 (sell signal)
-            if current_qty >= 0:  # Not already short
-                # Close any long position first
-                if current_qty > 0:
-                    self.place_order('sell', current_qty)
-                # Open short position (only if allowed by your broker)
-                # Note: For safety, we'll just close positions instead of shorting
-                logger.info("SELL signal executed (position closed)")
-        
+        # Skip trading if using very old historical data
+        if days_old > 30:
+            logger.info(f"Skipping trading - using historical data from {days_old} days ago")
+            logger.info("Trading signals are for educational/testing purposes only when using historical data")
         else:
-            logger.info("No trading signal - holding current position")
+            # Execute trades based on signals
+            if position_change == 2:  # Signal changed from -1 to 1 (buy signal)
+                if current_qty <= 0:  # Not already long
+                    # Close any short position first
+                    if current_qty < 0:
+                        self.place_order('buy', abs(current_qty))
+                    # Open long position
+                    self.place_order('buy', self.position_size)
+                    logger.info("BUY signal executed")
+                    
+            elif position_change == -2:  # Signal changed from 1 to -1 (sell signal)
+                if current_qty >= 0:  # Not already short
+                    # Close any long position first
+                    if current_qty > 0:
+                        self.place_order('sell', current_qty)
+                    # Open short position (only if allowed by your broker)
+                    # Note: For safety, we'll just close positions instead of shorting
+                    logger.info("SELL signal executed (position closed)")
+            
+            else:
+                logger.info("No trading signal - holding current position")
         
         # Log account status
         try:
