@@ -274,6 +274,13 @@ class SimpleMovingAverageBot:
                     # Note: For safety, we'll just close positions instead of shorting
                     logger.info("SELL signal executed (position closed)")
             
+            elif current_qty == 0:  # No position held - check if we should enter
+                if signal == 1:  # Buy signal and no position
+                    self.place_order('buy', self.position_size)
+                    logger.info("Initial BUY position opened based on current signal")
+                elif signal == -1:  # Sell signal and no position (skip for safety)
+                    logger.info("SELL signal detected but skipping initial short position for safety")
+            
             else:
                 logger.info("No trading signal - holding current position")
         
