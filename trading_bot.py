@@ -47,7 +47,7 @@ class SimpleMovingAverageBot:
         )
         
         # Trading parameters
-        self.symbol = 'SPY'  # S&P 500 ETF - liquid and safe for testing
+        self.symbol = 'BYND'  # S&P 500 ETF - liquid and safe for testing
         self.short_window = 5   # Short-term moving average period
         self.long_window = 20   # Long-term moving average period
         self.position_size = 10  # Number of shares to trade
