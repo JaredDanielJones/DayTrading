@@ -57,23 +57,46 @@ class SimpleMovingAverageBot:
     def get_market_data(self):
         """Fetch recent market data for analysis"""
         try:
-            # Get bars for the last 30 days to have enough data for moving averages
+            # First try to get minute data for recent days (free accounts have limited access)
             end = datetime.now()
-            start = end - timedelta(days=30)
+            
+            # Try minute data for last 5 days first (free accounts may have access to this)
+            start = end - timedelta(days=5)
+            
+            try:
+                bars = self.api.get_bars(
+                    self.symbol,
+                    TimeFrame.Minute,
+                    start=start.strftime('%Y-%m-%d'),
+                    end=end.strftime('%Y-%m-%d'),
+                    limit=1000
+                ).df
+                
+                if not bars.empty and len(bars) >= self.long_window:
+                    logger.info(f"Retrieved {len(bars)} minute bars for {self.symbol}")
+                    return bars
+                else:
+                    logger.warning("Insufficient minute data, trying daily data...")
+                    
+            except Exception as minute_error:
+                logger.warning(f"Minute data unavailable ({minute_error}), falling back to daily data")
+            
+            # Fallback to daily data for longer period
+            start = end - timedelta(days=60)  # Get more days for daily data
             
             bars = self.api.get_bars(
                 self.symbol,
-                TimeFrame.Minute,  # 1-minute bars for day trading
+                TimeFrame.Day,  # Daily bars as fallback
                 start=start.strftime('%Y-%m-%d'),
                 end=end.strftime('%Y-%m-%d'),
-                limit=1000
+                limit=100
             ).df
             
             if bars.empty:
                 logger.warning("No market data received")
                 return None
                 
-            logger.info(f"Retrieved {len(bars)} bars for {self.symbol}")
+            logger.info(f"Retrieved {len(bars)} daily bars for {self.symbol}")
             return bars
             
         except Exception as e:
