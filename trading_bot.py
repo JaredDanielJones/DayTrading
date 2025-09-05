@@ -8,6 +8,7 @@ import os
 import logging
 import pandas as pd
 import numpy as np
+import pytz
 from datetime import datetime, timedelta
 from alpaca_trade_api import REST, TimeFrame
 from dotenv import load_dotenv
@@ -51,13 +52,20 @@ class SimpleMovingAverageBot:
         self.long_window = 20   # Long-term moving average period
         self.position_size = 10  # Number of shares to trade
         
+        # Timezone for market data (US markets)
+        self.us_eastern = pytz.timezone('US/Eastern')
+        
         logger.info(f"Initialized trading bot for {self.symbol}")
         logger.info(f"Using paper trading account: {self.api.get_account().account_number}")
+    
+    def _get_current_time(self):
+        """Get current time in US/Eastern timezone to match market data"""
+        return datetime.now(self.us_eastern)
     
     def get_market_data(self):
         """Fetch recent market data for analysis"""
         try:
-            end = datetime.now()
+            end = self._get_current_time()
             
             # First try to get minute data for recent days (free accounts have limited access)
             start = end - timedelta(days=5)
@@ -144,7 +152,8 @@ class SimpleMovingAverageBot:
         
         # Check if we're using historical data (more than 30 days old)
         latest_date = pd.to_datetime(data.index[-1])
-        days_old = (datetime.now() - latest_date).days
+        current_time = self._get_current_time()
+        days_old = (current_time - latest_date).days
         if days_old > 30:
             logger.info(f"Using historical data from {latest_date.strftime('%Y-%m-%d')} ({days_old} days old)")
             logger.info("Note: Signals are based on historical data due to subscription limitations")
@@ -234,7 +243,8 @@ class SimpleMovingAverageBot:
         
         # Check if we're using historical data (more than 30 days old)
         latest_date = pd.to_datetime(data.index[-1])
-        days_old = (datetime.now() - latest_date).days
+        current_time = self._get_current_time()
+        days_old = (current_time - latest_date).days
         
         # Get current position
         current_qty = self.get_current_position()
